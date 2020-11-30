@@ -12,6 +12,7 @@ namespace League\OAuth2\Server\Grant;
 use DateInterval;
 use DateTimeImmutable;
 use Exception;
+use Illuminate\Http\Response;
 use League\OAuth2\Server\CodeChallengeVerifiers\CodeChallengeVerifierInterface;
 use League\OAuth2\Server\CodeChallengeVerifiers\PlainVerifier;
 use League\OAuth2\Server\CodeChallengeVerifiers\S256Verifier;
@@ -26,6 +27,7 @@ use League\OAuth2\Server\ResponseTypes\RedirectResponse;
 use League\OAuth2\Server\ResponseTypes\ResponseTypeInterface;
 use LogicException;
 use Psr\Http\Message\ServerRequestInterface;
+use League\OAuth2\Server\ResponseTypes\Response as HttpResponse;
 use stdClass;
 
 class AuthCodeGrant extends AbstractAuthorizeGrant
@@ -327,7 +329,7 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
     /**
      * {@inheritdoc}
      */
-    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest)
+    public function completeAuthorizationRequest(AuthorizationRequest $authorizationRequest, $noRedirect = false)
     {
         if ($authorizationRequest->getUser() instanceof UserEntityInterface === false) {
             throw new LogicException('An instance of UserEntityInterface should be set on the AuthorizationRequest');
@@ -338,39 +340,25 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
 
         // The user approved the client, redirect them back with an auth code
         if ($authorizationRequest->isAuthorizationApproved() === true) {
-            $authCode = $this->issueAuthCode(
-                $this->authCodeTTL,
-                $authorizationRequest->getClient(),
-                $authorizationRequest->getUser()->getIdentifier(),
-                $authorizationRequest->getRedirectUri(),
-                $authorizationRequest->getScopes()
-            );
-
-            $payload = [
-                'client_id'             => $authCode->getClient()->getIdentifier(),
-                'redirect_uri'          => $authCode->getRedirectUri(),
-                'auth_code_id'          => $authCode->getIdentifier(),
-                'scopes'                => $authCode->getScopes(),
-                'user_id'               => $authCode->getUserIdentifier(),
-                'expire_time'           => (new DateTimeImmutable())->add($this->authCodeTTL)->getTimestamp(),
-                'code_challenge'        => $authorizationRequest->getCodeChallenge(),
-                'code_challenge_method' => $authorizationRequest->getCodeChallengeMethod(),
-            ];
-
-            $jsonPayload = \json_encode($payload);
+            $jsonPayload = $this->getJsonPayload($authorizationRequest);
 
             if ($jsonPayload === false) {
                 throw new LogicException('An error was encountered when JSON encoding the authorization request response');
             }
 
+            $result = [
+                'code'  => $this->encrypt($jsonPayload),
+                'state' => $authorizationRequest->getState(),
+            ];
+
+            if ($noRedirect) {
+                return new HttpResponse($result);
+            }
             $response = new RedirectResponse();
             $response->setRedirectUri(
                 $this->makeRedirectUri(
                     $finalRedirectUri,
-                    [
-                        'code'  => $this->encrypt($jsonPayload),
-                        'state' => $authorizationRequest->getState(),
-                    ]
+                    $result
                 )
             );
 
@@ -401,5 +389,29 @@ class AuthCodeGrant extends AbstractAuthorizeGrant
         return \is_array($authorizationRequest->getClient()->getRedirectUri())
                 ? $authorizationRequest->getClient()->getRedirectUri()[0]
                 : $authorizationRequest->getClient()->getRedirectUri();
+    }
+
+    private function getJsonPayload(AuthorizationRequest $authorizationRequest)
+    {
+        $authCode = $this->issueAuthCode(
+            $this->authCodeTTL,
+            $authorizationRequest->getClient(),
+            $authorizationRequest->getUser()->getIdentifier(),
+            $authorizationRequest->getRedirectUri(),
+            $authorizationRequest->getScopes()
+        );
+
+        $payload = [
+            'client_id'             => $authCode->getClient()->getIdentifier(),
+            'redirect_uri'          => $authCode->getRedirectUri(),
+            'auth_code_id'          => $authCode->getIdentifier(),
+            'scopes'                => $authCode->getScopes(),
+            'user_id'               => $authCode->getUserIdentifier(),
+            'expire_time'           => (new DateTimeImmutable())->add($this->authCodeTTL)->getTimestamp(),
+            'code_challenge'        => $authorizationRequest->getCodeChallenge(),
+            'code_challenge_method' => $authorizationRequest->getCodeChallengeMethod(),
+        ];
+
+        return  \json_encode($payload);
     }
 }
